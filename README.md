@@ -10,10 +10,11 @@ If this fails, it will lookup TXT and MX records for the domain, and then perfor
 Usage
 -----
 
-dnscan.py -d \<domain\> [OPTIONS]
+dnscan.py (-d \<domain\> | -l \<list\>) [OPTIONS]
 
 #### Mandatory Arguments
-    -d  --domain                              Target domain
+    -d  --domain                              Target domain; OR
+    -l  --list                                Newline separated file of domains to scan
     
 #### Optional Arguments
     -w --wordlist <wordlist>                  Wordlist of subdomains to use
@@ -21,8 +22,10 @@ dnscan.py -d \<domain\> [OPTIONS]
     -6 --ipv6                                 Scan for IPv6 records (AAAA)
     -z --zonetransfer                         Perform zone transfer and exit
     -r --recursive                            Recursively scan subdomains
+    -R --resolver <resolver>                  Use the specified resolver instead of the system default
     -T --tld                                  Scan for the domain in all TLDs
-    -o --output                               Output to a text file
+    -o --output <filename>                    Output to a text file
+    -i --output-ips <filename>                Output discovered IP addresses to a text file
     -v --verbose                              Verbose output
     -h --help                                 Display help text
 
@@ -45,3 +48,10 @@ TLD Scanning
 The -T (--tld) option can be used to scan for all of the TLDs a specific domain name exists in. By default it will use the **tlds.txt** list, which contains all of the TLDs listed by IANA (including new TLDs). You can also specify a custom wordlist with -w. The **suffixes.txt** file included is a cut-down version of the public suffix list, so will include most of the second level domains (such as co.uk).
 
 Note that when you use this option, you should only specify the base of the domain name ("github", not "github.com").
+
+Setup
+-----
+
+Run the following command to install dependencies:
+
+    $ pip install -r requirements.txt

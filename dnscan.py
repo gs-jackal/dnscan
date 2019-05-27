@@ -6,6 +6,7 @@
 from __future__ import print_function
 
 import os
+import platform
 import re
 import sys
 import threading
@@ -15,6 +16,11 @@ try:    # Ugly hack because Python3 decided to rename Queue to queue
     import Queue
 except ImportError:
     import queue as Queue
+
+try:    # Python2 and Python3 have different IP address libraries
+        from ipaddress import ip_address as ipaddr
+except ImportError:
+        from  netaddr import IPAddress as ipaddr
 
 try:
     import argparse
@@ -39,7 +45,7 @@ class scanner(threading.Thread):
         self.queue = queue
 
     def get_name(self, domain):
-            global wildcard
+            global wildcard, addresses
             try:
                 if sys.stdout.isatty():     # Don't spam output if redirected
                     sys.stdout.write(domain + "                              \r")
@@ -54,18 +60,25 @@ class scanner(threading.Thread):
                         print(domain + " - " + res)
                     return
                 for rdata in res:
+                    address = rdata.address
                     if wildcard:
-                        if rdata.address == wildcard:
-                            return
+                        for wildcard_ip in wildcard:
+                            if address == wildcard_ip:
+                                return
                     if args.domain_first:
-                        print(domain + " - " + col.brown + rdata.address + col.end)
+                        print(domain + " - " + col.brown + address + col.end)
                     else:
-                        print(rdata.address + " - " + col.brown + domain + col.end)
+                        print(address + " - " + col.brown + domain + col.end)
                     if outfile:
                         if args.domain_first:
-                            print(domain + " - " + rdata.address, file=outfile)
+                            print(domain + " - " + address, file=outfile)
                         else:
-                            print(rdata.address + " - " + domain, file=outfile)
+                            print(address + " - " + domain, file=outfile)
+                    try:
+                        addresses.add(ipaddr(unicode(address)))
+                    except NameError:
+                        addresses.add(ipaddr(str(address)))
+
                 if domain != target and args.recurse:    # Don't scan root domain twice
                     add_target(domain)  # Recursively scan subdomains
             except:
@@ -110,7 +123,7 @@ class output:
 
 
 class col:
-    if sys.stdout.isatty():
+    if sys.stdout.isatty() and platform.system() != "Windows":
         green = '\033[32m'
         blue = '\033[94m'
         red = '\033[31m'
@@ -133,14 +146,19 @@ def lookup(domain, recordtype):
 
 def get_wildcard(target):
 
+    # List of IP's for wildcard DNS
+    wildcards = []
     # Use current unix time as a test subdomain
     epochtime = str(int(time.time()))
     # Prepend a letter to work around incompetent companies like CableOne
     # and their stupid attempts at DNS hijacking
     res = lookup("a" + epochtime + "." + target, recordtype)
     if res:
-        out.good(col.red + "Wildcard" + col.end + " domain found - " + col.brown + res[0].address + col.end)
-        return res[0].address
+        for res_data in res:
+            address = res_data.address
+            wildcards.append(address)
+            out.good(col.red + "Wildcard" + col.end + " domain found - " + col.brown + address + col.end)
+        return wildcards
     else:
         out.verbose("No wildcard domain found")
 
@@ -228,21 +246,26 @@ def get_args():
     global args
     
     parser = argparse.ArgumentParser('dnscan.py', formatter_class=lambda prog:argparse.HelpFormatter(prog,max_help_position=40))
-    parser.add_argument('-d', '--domain', help='Target domain', dest='domain', required=True)
+    target = parser.add_mutually_exclusive_group(required=True) # Allow a user to specify a list of target domains
+    target.add_argument('-d', '--domain', help='Target domain', dest='domain', required=False)
+    target.add_argument('-l', '--list', help='File containing list of target domains', dest='domain_list', required=False)
     parser.add_argument('-w', '--wordlist', help='Wordlist', dest='wordlist', required=False)
     parser.add_argument('-t', '--threads', help='Number of threads', dest='threads', required=False, type=int, default=8)
     parser.add_argument('-6', '--ipv6', help='Scan for AAAA records', action="store_true", dest='ipv6', required=False, default=False)
     parser.add_argument('-z', '--zonetransfer', action="store_true", default=False, help='Only perform zone transfers', dest='zonetransfer', required=False)
     parser.add_argument('-r', '--recursive', action="store_true", default=False, help="Recursively scan subdomains", dest='recurse', required=False)
+    parser.add_argument('-R', '--resolver', help="Use the specified resolver instead of the system default", dest='resolver', required=False)
     parser.add_argument('-T', '--tld', action="store_true", default=False, help="Scan for TLDs", dest='tld', required=False)
     parser.add_argument('-o', '--output', help="Write output to a file", dest='output_filename', required=False)
+    parser.add_argument('-i', '--output-ips',   help="Write discovered IP addresses to a file", dest='output_ips', required=False)
     parser.add_argument('-D', '--domain-first', action="store_true", default=False, help='Output domain first, rather than IP address', dest='domain_first', required=False)
     parser.add_argument('-v', '--verbose', action="store_true", default=False, help='Verbose mode', dest='verbose', required=False)
     args = parser.parse_args()
 
 def setup():
-    global target, wordlist, queue, resolver, recordtype, outfile
-    target = args.domain
+    global targets, wordlist, queue, resolver, recordtype, outfile, outfile_ips
+    if args.domain:
+        targets = [args.domain]
     if args.tld and not args.wordlist:
         args.wordlist = os.path.join(os.path.dirname(os.path.realpath(__file__)), "tlds.txt")
     else:
@@ -262,6 +285,10 @@ def setup():
     except IOError:
         out.fatal("Could not open output file: " + args.output_filename)
         sys.exit(1)
+    if args.output_ips:
+        outfile_ips = open(args.output_ips, "w")
+    else:
+        outfile_ips = None
 
     # Number of threads should be between 1 and 32
     if args.threads < 1:
@@ -271,6 +298,9 @@ def setup():
     queue = Queue.Queue()
     resolver = dns.resolver.Resolver()
     resolver.timeout = 1
+    resolver.lifetime = 1
+    if args.resolver:
+        resolver.nameservers = [ args.resolver ]
 
     # Record type
     if args.ipv6:
@@ -282,59 +312,99 @@ def setup():
 
 
 if __name__ == "__main__":
-    global wildcard
+    global wildcard, addresses, outfile_ips
+    addresses = set([])
     out = output()
     get_args()
     setup()
-    if args.tld:
-        if "." in target:
-            out.warn("Warning: TLD scanning works best with just the domain root")
-        out.good("TLD Scan")
-        add_tlds(target)
-    else:
-        queue.put(target)   # Add actual domain as well as subdomains
-
-        nameservers = get_nameservers(target)
-        out.good("Getting nameservers")
-        targetns = []       # NS servers for target
-        try:    # Subdomains often don't have NS recoards..
-            for ns in nameservers:
-                ns = str(ns)[:-1]   # Removed trailing dot
-                res = lookup(ns, "A")
-                for rdata in res:
-                    targetns.append(rdata.address)
-                    print(rdata.address + " - " + col.brown + ns + col.end)
-                    if outfile:
-                        print(rdata.address + " - " + ns, file=outfile)
-                zone_transfer(target, ns)
-        except SystemExit:
-            sys.exit(0)
-        except:
-            out.warn("Getting nameservers failed")
-#    resolver.nameservers = targetns     # Use target's NS servers for lokups
-# Missing results using domain's NS - removed for now
-        out.warn("Zone transfer failed\n")
-        if args.zonetransfer:
-            sys.exit(0)
-
-        get_v6(target)
-        get_txt(target)
-        get_mx(target)
-        wildcard = get_wildcard(target)
-        out.status("Scanning " + target + " for " + recordtype + " records")
-        add_target(target)
-
-    for i in range(args.threads):
-        t = scanner(queue)
-        t.setDaemon(True)
-        t.start()
     try:
-        for i in range(args.threads):
-            t.join(1024)       # Timeout needed or threads ignore exceptions
-    except KeyboardInterrupt:
-        out.fatal("Caught KeyboardInterrupt, quitting...")
-        if outfile:
-            outfile.close()
+        resolver.query('.', 'NS')
+    except dns.resolver.NoAnswer:
+        pass
+    except dns.exception.Timeout:
+        out.fatal("No valid DNS resolver. Set a custom resolver with -R <resolver>\n")
         sys.exit(1)
+
+    if args.domain_list:
+        out.verbose("Domain list provided, will parse {} for domains.".format(args.domain_list))
+        if not os.path.isfile(args.domain_list):
+            out.fatal("Domain list {} doesn't exist!".format(args.domain_list))
+            sys.exit(1)
+        with open(args.domain_list, 'r') as domain_list:
+            try:
+                targets = list(filter(bool, domain_list.read().split('\n')))
+            except Exception as e:
+                out.fatal("Couldn't read {}, {}".format(args.domain_list, e))
+                sys.exit(1)
+    for subtarget in targets:
+        global target
+        target = subtarget
+        out.status("Processing domain {}".format(target))
+        if args.resolver:
+            out.status("Using specified resolver {}".format(args.resolver))
+        else:
+            out.status("Using system resolvers {}".format(resolver.nameservers))
+        if args.tld:
+            if "." in target:
+                out.warn("Warning: TLD scanning works best with just the domain root")
+            out.good("TLD Scan")
+            add_tlds(target)
+        else:
+            queue.put(target)   # Add actual domain as well as subdomains
+
+            nameservers = get_nameservers(target)
+            out.good("Getting nameservers")
+            targetns = []       # NS servers for target
+            try:    # Subdomains often don't have NS recoards..
+                for ns in nameservers:
+                    ns = str(ns)[:-1]   # Removed trailing dot
+                    res = lookup(ns, "A")
+                    for rdata in res:
+                        targetns.append(rdata.address)
+                        print(rdata.address + " - " + col.brown + ns + col.end)
+                        if outfile:
+                            print(rdata.address + " - " + ns, file=outfile)
+                    zone_transfer(target, ns)
+            except SystemExit:
+                sys.exit(0)
+            except:
+                out.warn("Getting nameservers failed")
+    #    resolver.nameservers = targetns     # Use target's NS servers for lokups
+    # Missing results using domain's NS - removed for now
+            out.warn("Zone transfer failed\n")
+            if args.zonetransfer:
+                sys.exit(0)
+
+            get_v6(target)
+            get_txt(target)
+            get_mx(target)
+            wildcard = get_wildcard(target)
+            if wildcard:
+                for wildcard_ip in wildcard:
+                    try:
+                        addresses.add(ipaddr(unicode(wildcard_ip)))
+                    except NameError:
+                        addresses.add(ipaddr(str(wildcard_ip)))
+            out.status("Scanning " + target + " for " + recordtype + " records")
+            add_target(target)
+
+        for i in range(args.threads):
+            t = scanner(queue)
+            t.setDaemon(True)
+            t.start()
+        try:
+            for i in range(args.threads):
+                t.join(1024)       # Timeout needed or threads ignore exceptions
+        except KeyboardInterrupt:
+            out.fatal("Caught KeyboardInterrupt, quitting...")
+            if outfile:
+                outfile.close()
+            sys.exit(1)
+        print("                                        ")
+        if outfile_ips:
+            for address in sorted(addresses):
+                print(address, file=outfile_ips)
     if outfile:
         outfile.close()
+    if outfile_ips:
+        outfile_ips.close()

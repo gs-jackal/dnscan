@@ -4235,8 +4235,6 @@ co.nl
 co.no
 realm.cz
 cupcake.is
-cyon.link
-cyon.site
 biz.dk
 co.dk
 firm.dk
@@ -4413,7 +4411,6 @@ pagespeedmobilizer.com
 withgoogle.com
 withyoutube.com
 hashbang.sh
-hepforge.org
 herokuapp.com
 herokussl.com
 iki.fi
@@ -4507,7 +4504,6 @@ nyc.mn
 nid.io
 operaunite.com
 outsystemscloud.com
-ownprovider.com
 oy.lc
 pgfog.com
 pagefrontapp.com
